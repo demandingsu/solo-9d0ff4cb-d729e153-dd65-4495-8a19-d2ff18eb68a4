@@ -8,7 +8,7 @@
     <h1>{{ report.issue_no }} <span class="edition-chip">{{ report.edition }}</span></h1>
     <p class="muted">
       目录：<span class="url-text">{{ report.directory_url }}</span><br>
-      共读取 {{ report.directory_pages|length }} 个目录分页，检查 {{ report.detail_count }} 个扫描详情。
+      共读取 {{ report.directory_pages|length }} 个目录分页，检查 {{ report.entry_count }} 个详情入口，归并为 {{ report.detail_count }} 个扫描详情。
     </p>
   </div>
   <span class="badge badge-{{ report.status_key }} big">{{ report.status }}</span>
@@ -60,7 +60,7 @@
 <section class="section">
   <div class="section-heading">
     <h2>逐页判定与扫描来源</h2>
-    <p>每一页只统计期版一致、带图片链接且页码有效的扫描。</p>
+    <p>每一页只统计期版一致、带图片链接且页码有效的扫描；旧链接重定向到同一详情时只算一个扫描。</p>
   </div>
 
   <div class="page-grid">
@@ -84,6 +84,14 @@
             </div>
             <div class="source-line muted">
               <span>{{ source.issue }} · {{ source.edition }}</span>
+            </div>
+            <div class="source-urls">
+              <span class="url-label">入口{% if source.entry_urls|length > 1 %}（{{ source.entry_urls|length }} 个）{% endif %}</span>
+              {% for entry in source.entry_urls %}
+              <a class="url-text" href="{{ entry }}" target="_blank" rel="noopener">{{ entry }}</a>
+              {% endfor %}
+              <span class="url-label">落地</span>
+              <a class="url-text" href="{{ source.detail_url }}" target="_blank" rel="noopener">{{ source.detail_url }}</a>
             </div>
             <div class="source-actions">
               <a href="{{ source.detail_url }}" target="_blank" rel="noopener">详情页 ↗</a>
@@ -112,13 +120,18 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>编号</th><th>详情页</th><th>所属期版</th><th>页码</th><th>图片</th><th>备注</th></tr>
+        <tr><th>编号</th><th>入口地址</th><th>落地地址</th><th>所属期版</th><th>页码</th><th>图片</th><th>备注</th></tr>
       </thead>
       <tbody>
       {% for scan in report.accepted_scans %}
         <tr>
           <td><span class="scan-code">{{ scan.code }}</span></td>
-          <td><a href="{{ scan.detail_url }}" target="_blank" rel="noopener">查看详情 ↗</a></td>
+          <td class="url-cell">
+            {% for entry in scan.entry_urls %}
+            <a class="url-text" href="{{ entry }}" target="_blank" rel="noopener">{{ entry }}</a>
+            {% endfor %}
+          </td>
+          <td class="url-cell"><a class="url-text" href="{{ scan.detail_url }}" target="_blank" rel="noopener">{{ scan.detail_url }}</a></td>
           <td>{{ scan.issue }} · {{ scan.edition }}</td>
           <td>{{ scan.pages_text }}</td>
           <td><a href="{{ scan.image_url }}" target="_blank" rel="noopener">图片 ↗</a></td>
@@ -135,17 +148,22 @@
 <section class="section">
   <div class="section-heading">
     <h2>未采用扫描</h2>
-    <p>期版不一致、缺少图片链接或无法识别页码的详情不会覆盖任何页面。</p>
+    <p>期版不一致、缺少图片链接或无法识别页码的详情不会覆盖任何页面。多个入口指向同一落地地址时只计一个详情。</p>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>详情页</th><th>详情声明</th><th>页码</th><th>图片</th><th>未采用原因</th></tr>
+        <tr><th>入口地址</th><th>落地地址</th><th>详情声明</th><th>页码</th><th>图片</th><th>未采用原因</th></tr>
       </thead>
       <tbody>
       {% for scan in report.ignored_scans %}
         <tr>
-          <td><a href="{{ scan.detail_url }}" target="_blank" rel="noopener">查看详情 ↗</a></td>
+          <td class="url-cell">
+            {% for entry in scan.entry_urls %}
+            <a class="url-text" href="{{ entry }}" target="_blank" rel="noopener">{{ entry }}</a>
+            {% endfor %}
+          </td>
+          <td class="url-cell"><a class="url-text" href="{{ scan.detail_url }}" target="_blank" rel="noopener">{{ scan.detail_url }}</a></td>
           <td>{{ scan.issue or '—' }}{% if scan.issue or scan.edition %} · {% endif %}{{ scan.edition or '—' }}</td>
           <td>{{ scan.pages_text or '—' }}</td>
           <td>{% if scan.image_url %}<a href="{{ scan.image_url }}" target="_blank" rel="noopener">图片 ↗</a>{% else %}无{% endif %}</td>
@@ -166,12 +184,13 @@
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>阶段</th><th>URL</th><th>错误</th></tr></thead>
+      <thead><tr><th>阶段</th><th>入口 URL</th><th>落地 URL</th><th>错误</th></tr></thead>
       <tbody>
       {% for failure in report.failures %}
         <tr>
           <td><span class="chip chip-bad">{{ failure.stage }}</span></td>
           <td class="url-text">{{ failure.url }}</td>
+          <td class="url-text">{{ failure.final_url or '—' }}</td>
           <td class="muted">{{ failure.message }}</td>
         </tr>
       {% endfor %}

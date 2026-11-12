@@ -17,7 +17,17 @@ from math import ceil
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from .data import ISSUE_ORDER, PAGE_SIZE, get_issue, scan_edition, scan_image_path, scan_issue
+from .data import (
+    ISSUE_ORDER,
+    PAGE_SIZE,
+    find_entry,
+    get_issue,
+    scan_broken_entries,
+    scan_edition,
+    scan_entries,
+    scan_image_path,
+    scan_issue,
+)
 
 app = FastAPI(title="本地分页样本站点", docs_url=None, redoc_url=None)
 
@@ -122,22 +132,32 @@ async def directory(slug: str, page_no: int) -> HTMLResponse:
     issue = get_issue(slug)
     if issue is None:
         raise HTTPException(status_code=404, detail="期号不存在")
-    scans = issue["scans"]
-    total_pages = max(1, ceil(len(scans) / PAGE_SIZE))
+    entries = [
+        (scan, entry_id)
+        for scan in issue["scans"]
+        for entry_id in scan_entries(scan)
+    ]
+    total_pages = max(1, ceil(len(entries) / PAGE_SIZE))
     if page_no < 1 or page_no > total_pages:
         raise HTTPException(status_code=404, detail="目录页不存在")
 
     start = (page_no - 1) * PAGE_SIZE
-    page_scans = scans[start : start + PAGE_SIZE]
+    page_entries = entries[start : start + PAGE_SIZE]
 
     rows = []
-    for offset, scan in enumerate(page_scans, start=start + 1):
+    for offset, (scan, entry_id) in enumerate(page_entries, start=start + 1):
+        if entry_id in scan_broken_entries(scan):
+            note = "旧详情链接（已失效）"
+        elif entry_id != scan["id"]:
+            note = "旧详情链接（站内重定向）"
+        else:
+            note = "扫描件详情"
         rows.append(
             f"""<tr>
   <td>{offset:02d}</td>
-  <td>期版一致的扫描件</td>
+  <td>{note}</td>
   <td>{html.escape(scan['pages'])} 页</td>
-  <td><a class="detail-link" href="../../../scan/{slug}/{scan['id']}.html">查看详情</a></td>
+  <td><a class="detail-link" href="../../../scan/{slug}/{entry_id}.html">查看详情</a></td>
 </tr>"""
         )
 
@@ -177,10 +197,10 @@ async def detail(slug: str, scan_id: str) -> HTMLResponse:
     issue = get_issue(slug)
     if issue is None:
         raise HTTPException(status_code=404, detail="期号不存在")
-    scan = next((item for item in issue["scans"] if item["id"] == scan_id), None)
+    scan, legacy = find_entry(issue, scan_id)
     if scan is None:
         raise HTTPException(status_code=404, detail="扫描详情不存在")
-    if scan.get("broken"):
+    if scan.get("broken") or scan_id in scan_broken_entries(scan):
         return HTMLResponse(
             shell(
                 "详情不存在",
@@ -188,6 +208,12 @@ async def detail(slug: str, scan_id: str) -> HTMLResponse:
 <p class="lede">该条目录记录指向的详情页没有被归档，验收时将被标记为抓取失败。</p>""",
             ),
             status_code=404,
+        )
+    if legacy:
+        # Legacy directory entries redirect to the current detail address, as
+        # the real archive does after a detail page is re-published.
+        return RedirectResponse(
+            url=f"/scan/{slug}/{scan['id']}.html", status_code=307
         )
 
     issue_no = scan_issue(scan, issue)

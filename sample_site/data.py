@@ -25,12 +25,12 @@ ISSUES: dict[str, dict] = {
         "edition": "第3版",
         "total_pages": 8,
         "title": "示例 B · 重扫与缺页",
-        "description": "第 3 页被两张扫描重复覆盖；第 4、5 页分别因期号不符和缺图未被采用。",
+        "description": "第 3 页被两个不同详情重复覆盖；旧链接 b3-old 与 b3 指向同一详情，不应再加一处冲突。",
         "expected": "不合格",
         "scans": [
             {"id": "b1", "pages": "1", "image": True},
             {"id": "b2", "pages": "2-3", "image": True},
-            {"id": "b3", "pages": "3", "image": True},
+            {"id": "b3", "pages": "3", "image": True, "entries": ["b3", "b3-old"]},
             {"id": "b4", "pages": "4", "image": True, "issue": "2023-12-31"},
             {"id": "b5", "pages": "5", "image": False},
             {"id": "b6", "pages": "6-7", "image": True},
@@ -57,9 +57,46 @@ ISSUES: dict[str, dict] = {
             {"id": "c9", "pages": "10", "image": True},
         ],
     },
+    "redirect": {
+        "slug": "redirect",
+        "issue": "2024-05-04",
+        "edition": "第3版",
+        "total_pages": 6,
+        "title": "示例 D · 旧链接归并",
+        "description": "旧链接经站内重定向指向新详情，且两个入口跨目录分页出现；归并后每页仍只有一个扫描。",
+        "expected": "合格",
+        "scans": [
+            {"id": "d1", "pages": "1", "image": True, "entries": ["d1", "d1-old"]},
+            {"id": "d2", "pages": "2-3", "image": True, "entries": ["d2", "d2-old"]},
+            {"id": "d3", "pages": "4", "image": True},
+            {"id": "d4", "pages": "5", "image": True},
+            {"id": "d5", "pages": "6", "image": True},
+        ],
+    },
+    "alias-failure": {
+        "slug": "alias-failure",
+        "issue": "2024-05-06",
+        "edition": "第3版",
+        "total_pages": 4,
+        "title": "示例 E · 一条入口失败",
+        "description": "第 2 页的新入口可读，但同一条记录遗留的旧入口返回 404；即使页面均被覆盖也须整期待核实。",
+        "expected": "待核实",
+        "scans": [
+            {"id": "f1", "pages": "1", "image": True},
+            {
+                "id": "f2",
+                "pages": "2",
+                "image": True,
+                "entries": ["f2", "f2-lost"],
+                "broken_entries": ["f2-lost"],
+            },
+            {"id": "f3", "pages": "3", "image": True, "entries": ["f3", "f3-old"]},
+            {"id": "f4", "pages": "4", "image": True},
+        ],
+    },
 }
 
-ISSUE_ORDER = ["clean", "conflict", "pending"]
+ISSUE_ORDER = ["clean", "conflict", "pending", "redirect", "alias-failure"]
 PAGE_SIZE = 3
 
 
@@ -77,3 +114,22 @@ def scan_edition(scan: dict, issue: dict) -> str:
 
 def scan_image_path(slug: str, scan: dict) -> str:
     return f"/img/{slug}-{scan['id']}.svg"
+
+
+def scan_entries(scan: dict) -> list[str]:
+    """Directory entry ids for one scan; legacy ids redirect to ``scan['id']``."""
+    return list(scan.get("entries", [scan["id"]]))
+
+
+def scan_broken_entries(scan: dict) -> set[str]:
+    return set(scan.get("broken_entries", []))
+
+
+def find_entry(issue: dict, entry_id: str) -> tuple[dict | None, bool]:
+    """Return (scan, is_legacy_entry) for a directory entry id."""
+    for scan in issue["scans"]:
+        if scan["id"] == entry_id:
+            return scan, False
+        if entry_id in scan.get("entries", []):
+            return scan, True
+    return None, False

@@ -351,6 +351,8 @@ code {
   font-weight: 700;
 }
 .scan-pages { font-weight: 700; }
+.source-urls { display: grid; gap: 2px; margin-top: 6px; font-size: 11px; }
+.source-urls .url-label { color: var(--muted); font-size: 11px; letter-spacing: .04em; }
 .source-actions { display: flex; gap: 14px; margin-top: 6px; font-size: 13px; }
 .source-note { margin: 6px 0 0; color: var(--amber); font-size: 12px; }
 
@@ -366,6 +368,7 @@ th {
 }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: #faf7f0; }
+.url-cell { display: grid; gap: 3px; min-width: 220px; }
 
 .url-list { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
 .url-list li { color: var(--muted); }

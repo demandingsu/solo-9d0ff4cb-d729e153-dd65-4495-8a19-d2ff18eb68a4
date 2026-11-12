@@ -38,13 +38,25 @@ DEMO_ISSUES = [
     {
         "path": "/issues/conflict/page/1.html",
         "title": "示例 B · 重扫与缺页",
-        "description": "第 3 页重扫；第 4、5 页缺扫。",
+        "description": "第 3 页被两个不同详情重扫；旧链接 b3-old 与 b3 指向同一详情，不会重复计冲突。",
         "expected": "不合格",
     },
     {
         "path": "/issues/pending/page/1.html",
         "title": "示例 C · 详情 404",
         "description": "详情抓取失败，整期待核实。",
+        "expected": "待核实",
+    },
+    {
+        "path": "/issues/redirect/page/1.html",
+        "title": "示例 D · 旧链接归并",
+        "description": "新旧链接跨目录分页同时出现，按最终详情地址归并后每页仍只算一个扫描。",
+        "expected": "合格",
+    },
+    {
+        "path": "/issues/alias-failure/page/1.html",
+        "title": "示例 E · 一条入口失败",
+        "description": "第 2 页的新入口可读，旧入口 404；即使页面均被覆盖也须整期待核实。",
         "expected": "待核实",
     },
 ]

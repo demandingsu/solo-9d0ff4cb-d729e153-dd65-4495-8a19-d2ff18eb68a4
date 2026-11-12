@@ -547,6 +547,7 @@ def parse_detail_page(html: str, page_url: str) -> ParsedDetail:
 class ScanSource:
     code: str
     detail_url: str
+    entry_urls: list[str]
     image_url: str
     pages_text: str
     page_numbers: list[int]
@@ -554,9 +555,20 @@ class ScanSource:
     edition: str
     notes: list[str] = field(default_factory=list)
 
+    @property
+    def is_merged(self) -> bool:
+        """True when several directory entries resolved to this landing page."""
+        return len(self.entry_urls) > 1
+
+    @property
+    def is_redirected(self) -> bool:
+        """True when at least one entry reached the detail through a redirect."""
+        return any(url != self.detail_url for url in self.entry_urls)
+
 
 @dataclass
 class IgnoredScan:
+    entry_urls: list[str]
     detail_url: str
     issue: str
     edition: str
@@ -570,6 +582,7 @@ class FetchFailure:
     url: str
     stage: str
     message: str
+    final_url: str = ""
 
 
 @dataclass
@@ -616,7 +629,16 @@ class IssueReport:
         return sum(1 for page in self.pages if page.sources)
 
     @property
+    def entry_count(self) -> int:
+        """Number of distinct directory entry links that were checked."""
+        entries = sum(len(scan.entry_urls) for scan in self.accepted_scans)
+        entries += sum(len(scan.entry_urls) for scan in self.ignored_scans)
+        entries += sum(1 for failure in self.failures if failure.stage == "详情")
+        return entries
+
+    @property
     def detail_count(self) -> int:
+        """Number of distinct scan details after merging entries by landing URL."""
         detail_failures = sum(1 for failure in self.failures if failure.stage == "详情")
         return len(self.accepted_scans) + len(self.ignored_scans) + detail_failures
 
@@ -769,16 +791,65 @@ async def _load_directory(
 
 async def _inspect_detail(
     client: httpx.AsyncClient, url: str, semaphore: asyncio.Semaphore
-) -> tuple[ParsedDetail | None, FetchFailure | None, str, str]:
+) -> tuple[ParsedDetail | None, FetchFailure | None, str, str, str]:
+    """Return (detail, failure, entry_url, final_url, parse_error)."""
     async with semaphore:
         html, error, final_url = await _fetch_html(client, url)
         if error:
-            return None, FetchFailure(url=url, stage="详情", message=error), url, ""
+            return (
+                None,
+                FetchFailure(url=url, stage="详情", message=error, final_url=final_url),
+                url,
+                final_url,
+                "",
+            )
         try:
             detail = parse_detail_page(html, final_url)
-            return detail, None, url, final_url
+            return detail, None, url, final_url, ""
         except Exception as exc:  # pragma: no cover - parser defensive fallback
-            return None, None, url, f"详情页无法解析：{exc}"
+            return None, None, url, final_url, f"详情页无法解析：{exc}"
+
+
+def _canonical_detail_url(url: str) -> str:
+    """Canonical key used to merge directory entries that reach the same detail.
+
+    Fragments are already stripped while following links; normalise a
+    redundant trailing slash so ``/scan/1.html`` and ``/scan/1.html/`` are
+    treated as the same landing page.
+    """
+    parsed = urlparse(urldefrag(url)[0])
+    path = parsed.path.rstrip("/") or "/"
+    return parsed._replace(path=path, fragment="").geturl()
+
+
+@dataclass
+class _MergedDetail:
+    detail: ParsedDetail
+    landing_url: str
+    entry_urls: list[str] = field(default_factory=list)
+
+
+def _merge_detail_results(results: list[tuple]) -> list[_MergedDetail]:
+    """Group successful detail fetches by their final landing URL.
+
+    Old directory links may redirect to the current detail address.  When an
+    old and a new entry both land on the same detail they describe one scan,
+    not a rescan, so they must be collapsed before page coverage is computed.
+    Entries are kept so the report can show both the entry and landing address.
+    """
+    grouped: dict[str, _MergedDetail] = {}
+    order: list[str] = []
+    for detail, _failure, entry_url, final_url, _parse_error in results:
+        if detail is None:
+            continue
+        key = _canonical_detail_url(final_url)
+        if key not in grouped:
+            grouped[key] = _MergedDetail(detail=detail, landing_url=final_url)
+            order.append(key)
+        merged = grouped[key]
+        if entry_url not in merged.entry_urls:
+            merged.entry_urls.append(entry_url)
+    return [grouped[key] for key in order]
 
 
 def _ownership_text(issue: str, edition: str) -> str:
@@ -823,14 +894,16 @@ async def inspect_issue(directory_url: str, client: httpx.AsyncClient | None = N
     ignored: list[IgnoredScan] = []
     failures: list[FetchFailure] = list(dir_failures)
 
-    for detail, failure, detail_url, parse_error in results:
+    for detail, failure, entry_url, final_url, parse_error in results:
         if failure is not None:
+            # Any failed entry keeps the whole issue "needs verification",
+            # even if another entry for the same detail succeeded.
             failures.append(failure)
-            continue
-        if detail is None:
+        elif detail is None:
             ignored.append(
                 IgnoredScan(
-                    detail_url=detail_url,
+                    entry_urls=[entry_url],
+                    detail_url=final_url,
                     issue="",
                     edition="",
                     pages_text="",
@@ -838,17 +911,25 @@ async def inspect_issue(directory_url: str, client: httpx.AsyncClient | None = N
                     reason=parse_error or "详情页无法解析",
                 )
             )
+
+    for merged in _merge_detail_results(results):
+        detail = merged.detail
+        if detail is None:
             continue
+
+        base_ignored = dict(
+            entry_urls=sorted(merged.entry_urls),
+            detail_url=merged.landing_url,
+            issue=detail.issue,
+            edition=detail.edition,
+            pages_text=detail.pages_text,
+            image_url=detail.image_url,
+        )
 
         if not detail.issue or not detail.edition:
             ignored.append(
                 IgnoredScan(
-                    detail_url=detail_url,
-                    issue=detail.issue,
-                    edition=detail.edition,
-                    pages_text=detail.pages_text,
-                    image_url=detail.image_url,
-                    reason="详情未标明所属期版，无法确认归属",
+                    **base_ignored, reason="详情未标明所属期版，无法确认归属"
                 )
             )
             continue
@@ -858,11 +939,7 @@ async def inspect_issue(directory_url: str, client: httpx.AsyncClient | None = N
         ):
             ignored.append(
                 IgnoredScan(
-                    detail_url=detail_url,
-                    issue=detail.issue,
-                    edition=detail.edition,
-                    pages_text=detail.pages_text,
-                    image_url=detail.image_url,
+                    **base_ignored,
                     reason=(
                         "期版不一致：目录为 "
                         f"{_ownership_text(metadata.issue, metadata.edition)}，"
@@ -873,26 +950,12 @@ async def inspect_issue(directory_url: str, client: httpx.AsyncClient | None = N
             continue
         if not detail.image_url:
             ignored.append(
-                IgnoredScan(
-                    detail_url=detail_url,
-                    issue=detail.issue,
-                    edition=detail.edition,
-                    pages_text=detail.pages_text,
-                    image_url="",
-                    reason="缺少图片链接，不能作为有效扫描",
-                )
+                IgnoredScan(**base_ignored, reason="缺少图片链接，不能作为有效扫描")
             )
             continue
         if not detail.page_numbers:
             ignored.append(
-                IgnoredScan(
-                    detail_url=detail_url,
-                    issue=detail.issue,
-                    edition=detail.edition,
-                    pages_text=detail.pages_text,
-                    image_url=detail.image_url,
-                    reason="未给出可识别的页码",
-                )
+                IgnoredScan(**base_ignored, reason="未给出可识别的页码")
             )
             continue
 
@@ -903,20 +966,22 @@ async def inspect_issue(directory_url: str, client: httpx.AsyncClient | None = N
         if not valid_pages:
             ignored.append(
                 IgnoredScan(
-                    detail_url=detail_url,
-                    issue=detail.issue,
-                    edition=detail.edition,
-                    pages_text=detail.pages_text,
-                    image_url=detail.image_url,
+                    **base_ignored,
                     reason=f"页码超出总页数范围（共 {total_pages} 页）",
                 )
             )
             continue
 
+        if len(merged.entry_urls) > 1:
+            notes.append(f"目录中 {len(merged.entry_urls)} 个入口经重定向指向同一详情，已按一个扫描计算")
+        elif any(url != merged.landing_url for url in merged.entry_urls):
+            notes.append("入口经站内重定向到达当前详情地址")
+
         accepted.append(
             ScanSource(
                 code=f"S{len(accepted) + 1:02d}",
-                detail_url=detail_url,
+                detail_url=merged.landing_url,
+                entry_urls=sorted(merged.entry_urls),
                 image_url=detail.image_url,
                 pages_text=detail.pages_text,
                 page_numbers=sorted(set(valid_pages)),

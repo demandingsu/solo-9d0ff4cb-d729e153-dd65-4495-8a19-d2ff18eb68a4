@@ -41,6 +41,84 @@ async def test_clean_issue_is_qualified_and_crawls_pagination():
 
 
 @pytest.mark.asyncio
+async def test_legacy_and_new_links_that_land_on_same_detail_count_once():
+    async with make_client() as client:
+        report = await inspect_issue(
+            "http://sample.test/issues/redirect/page/1.html", client=client
+        )
+
+    # Old and new links appear in different directory pages but resolve to
+    # the same detail; they must merge into one scan instead of a rescan.
+    assert report.status == "合格"
+    assert all(page.status == "covered" for page in report.pages)
+    assert report.conflict_pages == []
+    assert len(report.accepted_scans) == 5
+    assert report.entry_count == 7
+    assert report.detail_count == 5
+
+    first = report.pages[0].sources[0]
+    assert first.is_merged
+    assert sorted(first.entry_urls) == [
+        "http://sample.test/scan/redirect/d1-old.html",
+        "http://sample.test/scan/redirect/d1.html",
+    ]
+    assert first.detail_url == "http://sample.test/scan/redirect/d1.html"
+    assert any("2 个入口" in note for note in first.notes)
+
+    spread = report.pages[1].sources[0]
+    assert spread.detail_url == "http://sample.test/scan/redirect/d2.html"
+    assert len(spread.entry_urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_legacy_alias_does_not_mask_a_real_rescan():
+    async with make_client() as client:
+        report = await inspect_issue(
+            "http://sample.test/issues/conflict/page/1.html", client=client
+        )
+
+    # b2 (page 2-3) and b3 (page 3) are genuinely different details.  The
+    # extra legacy entry b3-old points at b3 and must not create a third scan,
+    # but page 3 must still be a conflict.
+    assert report.status == "不合格"
+    assert report.conflict_pages == [3]
+    b3 = [scan for scan in report.accepted_scans if scan.detail_url.endswith("/b3.html")]
+    assert len(b3) == 1
+    assert sorted(b3[0].entry_urls) == [
+        "http://sample.test/scan/conflict/b3-old.html",
+        "http://sample.test/scan/conflict/b3.html",
+    ]
+    assert len(report.pages[2].sources) == 2
+
+
+@pytest.mark.asyncio
+async def test_one_failed_entry_forces_verification_even_if_alias_ok():
+    async with make_client() as client:
+        report = await inspect_issue(
+            "http://sample.test/issues/alias-failure/page/1.html", client=client
+        )
+
+    # Page 2 is fully covered by the working new entry, but the failed legacy
+    # entry for the same record must still make the issue "needs verification".
+    assert report.status == "待核实"
+    assert report.status != "合格"
+    assert [page.status for page in report.pages] == ["covered"] * 4
+    assert report.missing_pages == []
+    assert report.conflict_pages == []
+    assert len(report.accepted_scans) == 4
+    assert len(report.failures) == 1
+    failure = report.failures[0]
+    assert failure.stage == "详情"
+    assert "HTTP 404" in failure.message
+    assert failure.url == "http://sample.test/scan/alias-failure/f2-lost.html"
+    # The working entry still contributes its entry and landing address to the
+    # page grid, while the failed entry remains visible in the failure list.
+    f2 = [scan for scan in report.accepted_scans if scan.detail_url.endswith("/f2.html")]
+    assert len(f2) == 1
+    assert "http://sample.test/scan/alias-failure/f2.html" in f2[0].entry_urls
+
+
+@pytest.mark.asyncio
 async def test_conflict_and_missing_pages_make_issue_unqualified():
     async with make_client() as client:
         report = await inspect_issue(
